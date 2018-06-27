@@ -6,9 +6,14 @@
 import datetime
 import email
 import imaplib
+import re
 import sys
 
 import click
+
+
+class EmailDownloaderError(Exception):
+    """An error was encountered during the matching of the criteria or attachment download/upload process."""
 
 
 class _DateType(click.ParamType):
@@ -37,7 +42,7 @@ class _DateType(click.ParamType):
 
 class TitanFlowManager(object):
     def __init__(self, imap_ssl_host, username, password, fetch_one, match_date_received, email_subject, email_sender,
-                 filename_pattern, archive_mailbox):
+                 filename_pattern, archive_folder, load_date):
         """
 
         """
@@ -46,24 +51,70 @@ class TitanFlowManager(object):
         self.password = password
         self.fetch_one = fetch_one
         self.match_date_received = match_date_received
-        self.email_subject = email_subject
-        self.email_sender = email_sender
-        self.filename_pattern = filename_pattern
-        self.archive_mailbox = archive_mailbox
+        self.email_subject = re.compile(email_subject)
+        self.email_sender = re.compile(email_sender)
+        self.filename_pattern = re.compile(filename_pattern)
+        self.archive_folder = archive_folder
+        self.load_date = load_date
 
         from datalake import utilities
         self.acquire_program = utilities.AcquireProgram()
         self.logger = self.acquire_program.logger
 
+    def _raise_if_not_ok(self, response, message):
+        if response != "OK":
+            raise EmailDownloaderError(message[0].decode())
+
+    def archive_uids(self, imap, uids):
+        imap.select()  # get out of readonly mode for the moving
+        for uid in uids:
+            self._raise_if_not_ok(*imap.uid("COPY", uid, self.archive_folder))
+            self._raise_if_not_ok(*imap.uid("STORE", uid, "+FLAGS", "(\Deleted)"))
+        imap.expunge()
+
+    def get_attachments(self, imap):
+        if self.archive_folder is not None:
+            self._raise_if_not_ok(*imap.select(self.archive_folder, readonly=True))
+        imap.select(readonly=True)
+        if self.match_date_received:
+            uids = imap.uid("search", "ON", self.load_date.strftime("%d-%b-%Y"))
+        else:
+            uids = imap.uid("search", None, "ALL")[1][0].split()
+        uids.reverse()
+        attachments_found = False
+        for uid in uids:
+            raw_mail = imap.uid("fetch", uid, "(RFC822)")[1][0][1]
+            mail = email.message_from_bytes(raw_mail, _class=email.message.EmailMessage)
+            if self.email_subject.match(mail["Subject"]) and self.email_sender.match(mail["From"]):
+                for attachment in mail.iter_attachments():
+                    if self.filename_pattern.match(attachment["Content-Description"]):
+                        yield uid, attachment
+                        attachments_found = True
+                        if self.fetch_one:
+                            break
+        if not attachments_found:
+            raise EmailDownloaderError("0 attachments were found matching the criteria.")
+
     def run(self):
         """"""
-        pass
+        with imaplib.IMAP4_SSL(self.imap_ssl_host) as imap:
+            imap.login(self.username, self.password)
+            attachments = self.get_attachments(imap)
+            uids_to_move = set()
+            for uid, attachment in attachments:
+                self.upload(attachment)
+                uids_to_move.add(uid)
+            if self.archive_folder is not None:
+                self.archive_uids(imap, uids_to_move)
 
-    def upload(self, ):
+    def upload(self, attachment):
         """
 
         """
-        pass
+        blob_name = self.acquire_program.get_blob_name("{TITAN_DATA_SET_NAME}_{TITAN_LOAD_DATE}_{file_name}",
+                                                       file_name=attachment["Content-Description"])
+        self.logger.info("Uploading attachment...")
+        self.acquire_program.create_blob_from_bytes(attachment.get_payload(decode=True), blob_name=blob_name)
 
 
 @click.command()
@@ -75,10 +126,10 @@ class TitanFlowManager(object):
 @click.option("-e", "--email-subject", default=".*", help="")
 @click.option("-s", "--email-sender", default=".*", help="")
 @click.option("-n", "--filename-pattern", default=".*", help="")
-@click.option("-a", "--archive-mailbox", help="")
+@click.option("-a", "--archive-folder", help="")
 @click.option("-l", "--load-date", type=_DateType(), help="")
 def main(imap_ssl_host, username, password, fetch_one, match_date_received, email_subject, email_sender,
-         filename_pattern, archive_mailbox, load_date):
+         filename_pattern, archive_folder, load_date):
     """
 
     """
@@ -87,7 +138,7 @@ def main(imap_ssl_host, username, password, fetch_one, match_date_received, emai
     yyyy, mm, dd = str(load_date).split("-")
     filename_pattern = filename_pattern.replace("YYYY", yyyy).replace("MM", mm).replace("DD", dd)
     flow_manager = TitanFlowManager(imap_ssl_host, username, password, fetch_one, match_date_received, email_subject,
-                                    email_sender, filename_pattern, archive_mailbox)
+                                    email_sender, filename_pattern, archive_folder, load_date)
     try:
         flow_manager.run()
     except Exception as error:
