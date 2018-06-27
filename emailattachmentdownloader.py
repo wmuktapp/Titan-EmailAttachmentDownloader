@@ -91,7 +91,7 @@ class TitanFlowManager(object):
                         yield uid, attachment
                         attachments_found = True
                         if self.fetch_one:
-                            break
+                            return
         if not attachments_found:
             raise EmailDownloaderError("0 attachments were found matching the criteria.")
 
