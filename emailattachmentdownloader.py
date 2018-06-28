@@ -6,6 +6,7 @@ emailattachmentdownloader --help
 """
 
 
+import collections
 import datetime
 import email
 import imaplib
@@ -82,6 +83,18 @@ class TitanFlowManager(object):
         self.logger = self.acquire_program.logger
 
     @staticmethod
+    def _item_to_datetime(item):
+        """Convert the string date to a datetime object for sorting purposes.
+
+        This is a helper func, designed to be passed to sorted()'s key param.
+
+        Positional Arguments:
+        1. item (tuple): tuple of (uid, mail)
+
+        """
+        return datetime.datetime.strptime(item[1]["Date"], "%a, %d %b %Y %H:%M:%S %z")
+
+    @staticmethod
     def raise_if_not_ok(response, message):
         """Helper function raises an EmailDownloadError is the response is not "OK".
 
@@ -126,15 +139,13 @@ class TitanFlowManager(object):
             self.raise_if_not_ok(*imap.select(self.archive_folder, readonly=True))
         imap.select(readonly=True)
         if self.match_date_received:
-            on_value = (self.load_date - datetime.timedelta(days=1)).strftime("%d-%b-%Y")
-            uids = imap.uid("search", "ON", on_value)
+            on_value = (self.load_date + datetime.timedelta(days=1)).strftime("%d-%b-%Y")
+            uids = imap.uid("search", None, "ON %s" % on_value)[1][0].split()
         else:
             uids = imap.uid("search", None, "ALL")[1][0].split()
-        uids.reverse()
+        sorted_emails = self.sort_uids(imap, uids)
         attachments_found = False
-        for uid in uids:
-            raw_mail = imap.uid("fetch", uid, "(RFC822)")[1][0][1]
-            mail = email.message_from_bytes(raw_mail, _class=email.message.EmailMessage)
+        for uid, mail in sorted_emails.items():
             if self.email_subject.match(mail["Subject"]) and self.email_sender.match(mail["From"]):
                 for attachment in mail.iter_attachments():
                     if self.filename_pattern.match(attachment["Content-Description"]):
@@ -164,6 +175,21 @@ class TitanFlowManager(object):
                 self.archive_uids(imap, uids_to_move)
         self.logger.info("EXECUTION FINISHED")
 
+    def sort_uids(self, imap, uids):
+        """Sort the uids by most recent and return as a sorted dict mapping uids to email.message.EmailMessage objects.
+
+        Positional Arguments:
+        1. imap (imaplib.IMAP4_SSL): the logged in imap object to use to interact with the email server
+        2. uids (iterable): the uids to sort
+
+        """
+        unsorted_emails = {}
+        for uid in uids:
+            raw_mail = imap.uid("fetch", uid, "(RFC822)")[1][0][1]
+            mail = email.message_from_bytes(raw_mail, _class=email.message.EmailMessage)
+            unsorted_emails[uid] = mail
+        return collections.OrderedDict(sorted(unsorted_emails.items(), key=self._item_to_datetime, reverse=True))
+
     def upload(self, attachment):
         """Upload the attachment's byte payload to Titan's blob storage.
 
@@ -177,8 +203,8 @@ class TitanFlowManager(object):
 
 
 @click.command()
-@click.option("-h", "--imap-ssl-hostname", required=True, help="The hostname/port to connect to using IMAP over SSL. "
-              "Note that the default port, 993, is assumed.")
+@click.option("-h", "--imap-ssl-host", required=True, help="The hostname/port to connect to using IMAP over SSL. Note "
+              "that the default port, 993, is assumed.")
 @click.option("-u", "--username", required=True, help="The username to connect to the IMAP server with. Typically, "
               "this is the full email address.")
 @click.option("-p", "--password", required=True, help="The password to connect to the IMAP server with.")
