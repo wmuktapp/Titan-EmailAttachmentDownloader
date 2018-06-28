@@ -66,6 +66,9 @@ class TitanFlowManager(object):
             raise EmailDownloaderError(message[0].decode())
 
     def archive_uids(self, imap, uids):
+        """
+
+        """
         imap.select()  # get out of readonly mode for the moving
         for uid in uids:
             self._raise_if_not_ok(*imap.uid("COPY", uid, self.archive_folder))
@@ -73,11 +76,15 @@ class TitanFlowManager(object):
         imap.expunge()
 
     def get_attachments(self, imap):
+        """
+
+        """
         if self.archive_folder is not None:
             self._raise_if_not_ok(*imap.select(self.archive_folder, readonly=True))
         imap.select(readonly=True)
         if self.match_date_received:
-            uids = imap.uid("search", "ON", self.load_date.strftime("%d-%b-%Y"))
+            on_value = (self.load_date - datetime.timedelta(days=1)).strftime("%d-%b-%Y")
+            uids = imap.uid("search", "ON", on_value)
         else:
             uids = imap.uid("search", None, "ALL")[1][0].split()
         uids.reverse()
@@ -88,10 +95,10 @@ class TitanFlowManager(object):
             if self.email_subject.match(mail["Subject"]) and self.email_sender.match(mail["From"]):
                 for attachment in mail.iter_attachments():
                     if self.filename_pattern.match(attachment["Content-Description"]):
-                        yield uid, attachment
                         attachments_found = True
-                        if self.fetch_one:
-                            break
+                        yield uid, attachment
+                if self.fetch_one and attachments_found:
+                    return
         if not attachments_found:
             raise EmailDownloaderError("0 attachments were found matching the criteria.")
 
