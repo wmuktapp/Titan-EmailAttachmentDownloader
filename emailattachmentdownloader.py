@@ -78,7 +78,7 @@ class TitanFlowManager(object):
         self.archive_folder = archive_folder
         self.load_date = load_date
 
-        from datalake import utilities
+        from titan import utilities
         self.acquire_program = utilities.AcquireProgram()
         self.logger = self.acquire_program.logger
 
