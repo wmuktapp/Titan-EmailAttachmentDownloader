@@ -197,7 +197,7 @@ class TitanFlowManager(object):
         1. attachment (email.message.EmailMessage): the attachment whose byte payload should be uploaded
 
         """
-        blob_name = self.acquire_program.get_blob_name("{TITAN_DATA_SET_NAME}_{TITAN_LOAD_DATE}_{file_name}",
+        blob_name = self.acquire_program.get_blob_name("{ExecutionDataSetName}_{ExecutionLoadDate}_{file_name}",
                                                        file_name=attachment["Content-Description"])
         self.acquire_program.create_blob_from_bytes(attachment.get_payload(decode=True), blob_name=blob_name)
 
